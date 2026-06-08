@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>方案A - 深灰边框</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; padding: 40px; }
+    h1 { text-align: center; margin-bottom: 10px; color: #333; font-size: 20px; }
+    .subtitle { text-align: center; color: #888; margin-bottom: 30px; font-size: 13px; }
+    .layout-wrapper { max-width: 900px; margin: 0 auto; background: white; border-radius: 16px; padding: 30px; box-shadow: 0 2px 16px rgba(0,0,0,0.06); }
+    .floor-plan { width: 100%; aspect-ratio: 4/3; background: #f8fafc; border-radius: 12px; position: relative; border: 1.5px solid #e2e8f0; overflow: hidden; }
+
+    /* 实验台 - 竖向 */
+    .bench-v { position: absolute; background: #ffffff; border: 2px solid #94a3b8; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-direction: column; transition: transform 0.15s ease, box-shadow 0.15s ease; cursor: pointer; }
+    .bench-v:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+    /* 实验台 - 横向 */
+    .bench-h { position: absolute; background: #ffffff; border: 2px solid #94a3b8; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-direction: column; transition: transform 0.15s ease, box-shadow 0.15s ease; cursor: pointer; }
+    .bench-h:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+
+    .bench-v .label, .bench-h .label { font-size: 13px; font-weight: 700; color: #52525b; letter-spacing: 1px; }
+    .bench-v .sublabel, .bench-h .sublabel { font-size: 10px; color: #a1a1aa; margin-top: 2px; }
+
+    /* 冰箱：蓝色 */
+    .fridge { position: absolute; background: linear-gradient(180deg, #dbeafe 0%, #bfdbfe 100%); border: 1.5px solid #3b82f6; border-radius: 4px; display: flex; align-items: center; justify-content: center; flex-direction: column; transition: transform 0.15s ease, box-shadow 0.15s ease; cursor: pointer; }
+    .fridge:hover { transform: translateY(-1px); box-shadow: 0 3px 10px rgba(59,130,246,0.25); }
+    .fridge .label { font-size: 11px; font-weight: 700; color: #1e40af; }
+    .fridge .icon { font-size: 14px; margin-bottom: 2px; }
+
+    .f1 { left: 4%; top: 4%; width: 9%; height: 10%; }
+    .f2 { left: 4%; top: 17%; width: 9%; height: 10%; }
+    .f3 { left: 4%; top: 30%; width: 9%; height: 10%; }
+    .f4 { left: 4%; top: 43%; width: 9%; height: 10%; }
+    .f5 { left: 4%; top: 56%; width: 9%; height: 10%; }
+    .f6 { left: 4%; top: 69%; width: 9%; height: 10%; }
+    .ba { left: 18%; top: 4%; width: 14%; height: 52%; }
+    .bb { left: 35%; top: 4%; width: 14%; height: 52%; }
+    .bc { left: 52%; top: 4%; width: 14%; height: 52%; }
+    .bd { left: 69%; top: 4%; width: 14%; height: 52%; }
+    .be { left: 18%; top: 62%; width: 65%; height: 14%; }
+
+    .room-border { position: absolute; left: 1%; top: 1%; right: 1%; bottom: 1%; border: 1px dashed #cbd5e0; border-radius: 8px; pointer-events: none; }
+    .room-label { position: absolute; top: 2%; right: 3%; font-size: 11px; color: #94a3b8; font-weight: 500; letter-spacing: 2px; }
+
+    .info-bar { margin-top: 20px; display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; background: #f1f5f9; border-radius: 10px; }
+    .info-left { display: flex; gap: 24px; }
+    .info-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #475569; }
+    .info-box { width: 18px; height: 18px; border-radius: 4px; }
+    .bench-box { background: #ffffff; border: 2px solid #94a3b8; }
+    .fridge-box { background: linear-gradient(135deg, #dbeafe, #bfdbfe); border: 1.5px solid #3b82f6; }
+    .info-right { font-size: 12px; color: #94a3b8; }
+
+    .status-badge { position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%; background: #22c55e; border: 1.5px solid white; box-shadow: 0 0 0 1px #22c55e; }
+    .status-badge.empty { background: #d1d5db; box-shadow: 0 0 0 1px #d1d5db; }
+    .status-badge.low { background: #ef4444; box-shadow: 0 0 0 1px #ef4444; }
+  </style>
+</head>
+<body>
+  <h1>方案 A — 深灰边框</h1>
+  <p class="subtitle">纯白填充 + 深灰边框（2px）</p>
+  <div class="layout-wrapper">
+    <div class="floor-plan">
+      <div class="room-border"></div>
+      <div class="room-label">903 实验室</div>
+      <div class="fridge f1"><div class="icon">❄</div><div class="label">F1</div><div class="status-badge empty"></div></div>
+      <div class="fridge f2"><div class="icon">❄</div><div class="label">F2</div><div class="status-badge"></div></div>
+      <div class="fridge f3"><div class="icon">❄</div><div class="label">F3</div><div class="status-badge"></div></div>
+      <div class="fridge f4"><div class="icon">❄</div><div class="label">F4</div><div class="status-badge empty"></div></div>
+      <div class="fridge f5"><div class="icon">❄</div><div class="label">F5</div><div class="status-badge low"></div></div>
+      <div class="fridge f6"><div class="icon">❄</div><div class="label">F6</div><div class="status-badge"></div></div>
+      <div class="bench-v ba"><div class="label">实验台 A</div><div class="sublabel">3层架子</div><div class="status-badge"></div></div>
+      <div class="bench-v bb"><div class="label">实验台 B</div><div class="sublabel">3层架子</div><div class="status-badge"></div></div>
+      <div class="bench-v bc"><div class="label">实验台 C</div><div class="sublabel">3层架子</div><div class="status-badge empty"></div></div>
+      <div class="bench-v bd"><div class="label">实验台 D</div><div class="sublabel">3层架子</div><div class="status-badge"></div></div>
+      <div class="bench-h be"><div class="label">实验台 E</div><div class="sublabel">中央台 · 5层架子</div><div class="status-badge"></div></div>
+    </div>
+    <div class="info-bar">
+      <div class="info-left">
+        <div class="info-item"><div class="info-box bench-box"></div>实验台（白色+深灰框）</div>
+        <div class="info-item"><div class="info-box fridge-box"></div>冰箱（蓝色）</div>
+      </div>
+      <div class="info-right">方案 A 预览</div>
+    </div>
+  </div>
+</body>
+</html>

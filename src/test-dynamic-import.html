@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Test</title></head>
+<body>
+<pre id="out">Loading...</pre>
+<script type="module">
+  window.testValue = 'hello';
+  try {
+    const m = await import('./components/utils.js');
+    document.getElementById('out').textContent = 'SUCCESS: ' + JSON.stringify(Object.keys(m));
+  } catch (e) {
+    document.getElementById('out').textContent = 'ERROR: ' + e.message + '\n' + e.stack;
+  }
+</script>
+</body>
+</html>

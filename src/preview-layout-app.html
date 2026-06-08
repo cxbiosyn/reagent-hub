@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>位置视图预览 - 方案A</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; padding: 20px; }
+    h2 { text-align: center; margin-bottom: 16px; color: #333; font-size: 18px; }
+    .layout-wrapper { max-width: 1100px; margin: 0 auto; background: white; border-radius: 16px; padding: 24px; box-shadow: 0 2px 16px rgba(0,0,0,0.06); }
+    .floor-plan { width: 100%; height: 600px; background: #f8fafc; border-radius: 12px; position: relative; border: 1.5px solid #e2e8f0; overflow: hidden; }
+
+    .device { position: absolute; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-direction: column; cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease; overflow: hidden; }
+    .device:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.12); z-index: 10; }
+
+    /* 实验台：纯白 + 深灰边框 */
+    .bench { background: #ffffff; border: 2px solid #94a3b8; }
+    .bench .label { font-size: 12px; font-weight: 700; color: #52525b; letter-spacing: 1px; }
+    .bench .sublabel { font-size: 10px; color: #a1a1aa; margin-top: 2px; }
+
+    /* 冰箱：蓝色 */
+    .fridge { background: linear-gradient(180deg, #dbeafe 0%, #bfdbfe 100%); border: 1.5px solid #3b82f6; border-radius: 4px; }
+    .fridge .label { font-size: 11px; font-weight: 700; color: #1e40af; }
+    .fridge .icon { font-size: 14px; margin-bottom: 2px; }
+
+    .status-badge { position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%; background: #22c55e; border: 1.5px solid white; box-shadow: 0 0 0 1px #22c55e; }
+    .status-badge.empty { background: #d1d5db; box-shadow: 0 0 0 1px #d1d5db; }
+    .status-badge.low { background: #ef4444; box-shadow: 0 0 0 1px #ef4444; }
+
+    .room-border { position: absolute; left: 1%; top: 1%; right: 1%; bottom: 1%; border: 1px dashed #cbd5e0; border-radius: 8px; pointer-events: none; }
+    .room-label { position: absolute; top: 2%; right: 3%; font-size: 11px; color: #94a3b8; font-weight: 500; letter-spacing: 2px; }
+
+    .info-bar { margin-top: 16px; display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: #f1f5f9; border-radius: 10px; }
+    .info-left { display: flex; gap: 24px; }
+    .info-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #475569; }
+    .info-box { width: 18px; height: 18px; border-radius: 4px; }
+    .bench-box { background: #ffffff; border: 2px solid #94a3b8; }
+    .fridge-box { background: linear-gradient(135deg, #dbeafe, #bfdbfe); border: 1.5px solid #3b82f6; }
+
+    .count-pill { position: absolute; bottom: 6px; left: 6px; font-size: 10px; font-weight: 600; color: #64748b; background: rgba(255,255,255,0.85); padding: 1px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h2>903 实验室位置视图预览（方案A）</h2>
+  <div class="layout-wrapper">
+    <div class="floor-plan">
+      <div class="room-border"></div>
+      <div class="room-label">903 实验室</div>
+
+      <!-- 冰箱 F1-F6 -->
+      <div class="device fridge" style="left:4%;top:4%;width:9%;height:10%;"><div class="icon">❄</div><div class="label">F1</div><div class="status-badge empty"></div></div>
+      <div class="device fridge" style="left:4%;top:17%;width:9%;height:10%;"><div class="icon">❄</div><div class="label">F2</div><div class="status-badge"></div></div>
+      <div class="device fridge" style="left:4%;top:30%;width:9%;height:10%;"><div class="icon">❄</div><div class="label">F3</div><div class="status-badge"></div></div>
+      <div class="device fridge" style="left:4%;top:43%;width:9%;height:10%;"><div class="icon">❄</div><div class="label">F4</div><div class="status-badge empty"></div></div>
+      <div class="device fridge" style="left:4%;top:56%;width:9%;height:10%;"><div class="icon">❄</div><div class="label">F5</div><div class="status-badge low"></div></div>
+      <div class="device fridge" style="left:4%;top:69%;width:9%;height:10%;"><div class="icon">❄</div><div class="label">F6</div><div class="status-badge"></div></div>
+
+      <!-- 实验台 A-D -->
+      <div class="device bench" style="left:18%;top:4%;width:14%;height:52%;"><div class="label" style="writing-mode:vertical-rl">实验台A</div><div class="sublabel">3层</div><div class="status-badge"></div></div>
+      <div class="device bench" style="left:35%;top:4%;width:14%;height:52%;"><div class="label" style="writing-mode:vertical-rl">实验台B</div><div class="sublabel">3层</div><div class="status-badge"></div></div>
+      <div class="device bench" style="left:52%;top:4%;width:14%;height:52%;"><div class="label" style="writing-mode:vertical-rl">实验台C</div><div class="sublabel">3层</div><div class="status-badge empty"></div></div>
+      <div class="device bench" style="left:69%;top:4%;width:14%;height:52%;"><div class="label" style="writing-mode:vertical-rl">实验台D</div><div class="sublabel">3层</div><div class="status-badge"></div></div>
+
+      <!-- 实验台 E -->
+      <div class="device bench" style="left:18%;top:62%;width:65%;height:14%;"><div class="label">实验台E</div><div class="sublabel">中央台 · 5层</div><div class="status-badge"></div></div>
+    </div>
+
+    <div class="info-bar">
+      <div class="info-left">
+        <div class="info-item"><div class="info-box bench-box"></div>实验台（白色+深灰框）× 5</div>
+        <div class="info-item"><div class="info-box fridge-box"></div>冰箱（蓝色）× 6</div>
+      </div>
+      <div style="font-size:12px;color:#94a3b8">点击设备可查看架子/抽屉详情</div>
+    </div>
+  </div>
+</body>
+</html>

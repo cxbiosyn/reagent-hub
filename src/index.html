@@ -1,0 +1,1028 @@
+<!--
+  [v1.0.0] Reagent Hub - 试剂库存管理系统
+  改动记录：
+  - 新增：统一库存变更入口（handleInventoryChange），自动记日志
+  - 新增：待采购清单页面（purchase view），含搜索+全字段展示
+  - 新增：安全库存（safety_stock）数据模型+迁移逻辑
+  - 新增：Nutstore 同步状态管理
+  - 修复：位置独立（903/908 分别管理）
+-->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Synaura Reagent</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#0654A3',
+            secondary: '#00AAB5',
+            accent: '#38AA6D',
+            danger: '#E55353',
+            surface: '#FFFFFF',
+            bg: '#F5F7FA',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .fade-in { animation: fadeIn 0.25s ease-out; }
+    .stepper-btn { transition: all 0.12s ease; user-select: none; }
+    .stepper-btn:active:not(:disabled) { transform: scale(0.9); }
+    .stepper-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    .card-hover { transition: box-shadow 0.2s ease, transform 0.15s ease; }
+    .card-hover:hover { box-shadow: 0 4px 14px rgba(6,84,163,0.1); transform: translateY(-2px); }
+    .modal-backdrop { background: rgba(0,0,0,0.45); backdrop-filter: blur(3px); }
+  </style>
+  <script>
+    window.onerror = function(msg, url, line, col, err) {
+      document.body.innerHTML = '<pre style="padding:20px;color:red;font-size:14px;white-space:pre-wrap;word-break:break-all;">ERROR: ' + msg + '\n at ' + url + ':' + line + '\n' + (err && err.stack ? err.stack : '') + '</pre>';
+    };
+    window.addEventListener('unhandledrejection', function(e) {
+      document.body.innerHTML = '<pre style="padding:20px;color:red;font-size:14px;white-space:pre-wrap;word-break:break-all;">UNHANDLED REJECTION: ' + e.reason + '\n' + (e.reason && e.reason.stack ? e.reason.stack : '') + '</pre>';
+    });
+  </script>
+  <script type="module">
+    import { h, render } from 'https://esm.sh/preact@10.19.3';
+    import { useState, useMemo, useCallback, useEffect, useRef } from 'https://esm.sh/preact@10.19.3/hooks';
+    import htm from 'https://esm.sh/htm@3.1.1';
+
+    (async () => {
+      // Expose Preact/HTM globally for component files
+      window.Preact = { h, render };
+      window.PreactHooks = { useState, useMemo, useCallback, useEffect, useRef };
+      const html = htm.bind(h);
+      window.htm = htm;
+      window.html = html;
+
+      // Import view components dynamically (ensure globals are set first)
+      const utils = await import('./components/utils.js');
+      window.utils = utils;
+      const { QuantityStepper } = await import('./components/QuantityStepper.js');
+      window.QuantityStepper = QuantityStepper;
+      const { AggregateView } = await import('./components/AggregateView.js');
+      const { SegmentedView } = await import('./components/SegmentedView.js');
+      const { LogView } = await import('./components/LogView.js');
+      const { ReagentManager } = await import('./components/ReagentManager.js');
+      const { LayoutView, Navbar } = await import('./components/LayoutView.js');
+
+      // ==================== 坚果云同步模块（增量日志） ====================
+      const NutstoreSync = {
+        enabled: false,
+        baseDir: '',
+        opsDir: '',
+        initPromise: null,
+        opBuffer: [],
+        flushTimer: null,
+
+        async init() {
+          if (this.initPromise) return this.initPromise;
+          this.initPromise = this._doInit();
+          return this.initPromise;
+        },
+
+        async _doInit() {
+          if (!window.electronAPI) {
+            console.log('[Nutstore] 非Electron环境，跳过坚果云同步');
+            return false;
+          }
+          try {
+            const { homedir, join } = window.electronAPI.path;
+            const { mkdir, exists } = window.electronAPI.fs;
+            const home = await homedir();
+            const savedPath = localStorage.getItem('ri_sync_path');
+            if (savedPath) {
+              try {
+                this.baseDir = savedPath;
+                this.opsDir = await join(this.baseDir, 'operations');
+                await mkdir(this.opsDir, { recursive: true });
+                this.enabled = true;
+                console.log('[Nutstore] 同步已启用(自定义):', this.baseDir);
+                return true;
+              } catch (e) {}
+            }
+            const candidates = [
+              await join(home, 'Nutstore Files', '2025-Synlab', 'D.实验Toolbox', '出入库date'),
+              await join(home, 'Nutstore'),
+              await join(home, '坚果云'),
+              await join(home, 'Nutstore Files', '我的坚果云'),
+            ];
+            for (const dir of candidates) {
+              try {
+                if (await exists(dir)) {
+                  this.baseDir = await join(dir, 'reagent-inventory');
+                  this.opsDir = await join(this.baseDir, 'operations');
+                  await mkdir(this.opsDir, { recursive: true });
+                  this.enabled = true;
+                  console.log('[Nutstore] 同步已启用:', this.baseDir);
+                  return true;
+                }
+              } catch (e) {}
+            }
+            this.baseDir = await join(home, 'reagent-inventory-sync');
+            this.opsDir = await join(this.baseDir, 'operations');
+            await mkdir(this.opsDir, { recursive: true });
+            this.enabled = true;
+            console.log('[Nutstore] 使用本地回退目录:', this.baseDir);
+            return true;
+          } catch (e) {
+            console.error('[Nutstore] 初始化失败:', e);
+            return false;
+          }
+        },
+
+        async setBaseDir(newDir) {
+          if (!window.electronAPI) return false;
+          try {
+            const { join } = window.electronAPI.path;
+            const { mkdir } = window.electronAPI.fs;
+            this.baseDir = newDir;
+            this.opsDir = await join(this.baseDir, 'operations');
+            await mkdir(this.opsDir, { recursive: true });
+            this.enabled = true;
+            localStorage.setItem('ri_sync_path', newDir);
+            console.log('[Nutstore] 同步路径已切换:', this.baseDir);
+            return true;
+          } catch (e) {
+            console.error('[Nutstore] 切换路径失败:', e);
+            return false;
+          }
+        },
+
+        async writeSnapshot(data) {
+          await this.init();
+          if (!this.enabled) return;
+          try {
+            const { writeFile } = window.electronAPI.fs;
+            const { join } = window.electronAPI.path;
+            const filepath = await join(this.baseDir, 'snapshot.json');
+            const payload = { ...data, _timestamp: Date.now(), _version: 2 };
+            await writeFile(filepath, JSON.stringify(payload, null, 2));
+          } catch (e) {
+            console.error('[Nutstore] 写入快照失败:', e);
+          }
+        },
+
+        async readSnapshot() {
+          await this.init();
+          if (!this.enabled) return null;
+          try {
+            const { readFile } = window.electronAPI.fs;
+            const { join } = window.electronAPI.path;
+            const filepath = await join(this.baseDir, 'snapshot.json');
+            const content = await readFile(filepath);
+            return JSON.parse(content);
+          } catch (e) {
+            return null;
+          }
+        },
+
+        writeOperation(op) {
+          this.opBuffer.push({ ...op, timestamp_ms: Date.now() });
+          console.log('[Nutstore] 操作已缓冲，当前缓冲数:', this.opBuffer.length);
+          if (this.flushTimer) clearTimeout(this.flushTimer);
+          this.flushTimer = setTimeout(() => this._flushOps(), 2000);
+        },
+
+        async _flushOps() {
+          if (this.opBuffer.length === 0) { console.log('[Nutstore] 缓冲为空，跳过刷盘'); return; }
+          await this.init();
+          if (!this.enabled) { console.log('[Nutstore] 同步未启用，跳过刷盘'); return; }
+          const ops = [...this.opBuffer];
+          this.opBuffer = [];
+          try {
+            const { writeFile } = window.electronAPI.fs;
+            const { join } = window.electronAPI.path;
+            const user = 'user';
+            for (const op of ops) {
+              const filename = `op_${op.timestamp_ms}_${user}.json`;
+              const filepath = await join(this.opsDir, filename);
+              await writeFile(filepath, JSON.stringify(op, null, 2));
+            }
+            console.log(`[Nutstore] 已写入 ${ops.length} 条操作日志到 ${this.opsDir}`);
+          } catch (e) {
+            console.error('[Nutstore] 写入操作日志失败:', e);
+          }
+        },
+
+        async readAllOps() {
+          await this.init();
+          if (!this.enabled) return [];
+          try {
+            const { readdir, readFile } = window.electronAPI.fs;
+            const { join } = window.electronAPI.path;
+            const entries = await readdir(this.opsDir);
+            const ops = [];
+            for (const entry of entries) {
+              if (entry.name && entry.name.startsWith('op_') && entry.name.endsWith('.json')) {
+                const filepath = await join(this.opsDir, entry.name);
+                const content = await readFile(filepath);
+                ops.push(JSON.parse(content));
+              }
+            }
+            ops.sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+            return ops;
+          } catch (e) {
+            return [];
+          }
+        },
+
+        async readOperators() {
+          await this.init();
+          if (!this.enabled) return {};
+          try {
+            const { readFile } = window.electronAPI.fs;
+            const { join } = window.electronAPI.path;
+            const filepath = await join(this.baseDir, 'operators.json');
+            const content = await readFile(filepath);
+            return JSON.parse(content);
+          } catch (e) {
+            return {};
+          }
+        },
+
+        async writeOperators(mapping) {
+          await this.init();
+          if (!this.enabled) return;
+          try {
+            const { writeFile } = window.electronAPI.fs;
+            const { join } = window.electronAPI.path;
+            const filepath = await join(this.baseDir, 'operators.json');
+            await writeFile(filepath, JSON.stringify(mapping, null, 2));
+          } catch (e) {
+            console.error('[Nutstore] 写入操作人映射失败:', e);
+          }
+        },
+
+        async compressSnapshot(data) {
+          await this.init();
+          if (!this.enabled) return;
+          try {
+            const { writeFile, rm, mkdir } = window.electronAPI.fs;
+            const { join } = window.electronAPI.path;
+            const payload = { ...data, _timestamp: Date.now(), _version: 2 };
+            await writeFile(await join(this.baseDir, 'snapshot.json'), JSON.stringify(payload, null, 2));
+            await rm(this.opsDir, { recursive: true });
+            await mkdir(this.opsDir, { recursive: true });
+            console.log('[Nutstore] 已压缩快照，清空操作日志');
+          } catch (e) {
+            console.error('[Nutstore] 压缩快照失败:', e);
+          }
+        },
+      };
+      window.NutstoreSync = NutstoreSync;
+
+      // ==================== 字段定义 ====================
+    const BUILTIN_FIELDS = [
+      { id: 'name', label: '试剂名称', type: 'text', builtin: true, required: true },
+      { id: 'code', label: '简写代码', type: 'text', builtin: true, required: true },
+      { id: 'brand', label: '品牌', type: 'text', builtin: true, required: false },
+    ];
+
+    const INITIAL_CUSTOM_FIELDS = [
+      { id: 'cf_1', label: 'CAS号', type: 'text', builtin: false, required: false },
+      { id: 'cf_2', label: '储存条件', type: 'text', builtin: false, required: false },
+    ];
+
+    // ==================== Mock 数据 ====================
+    const INITIAL_REAGENTS = [
+      { id: 1, name: '葡萄糖', code: 'P01', brand: 'Sigma-Aldrich', custom: { cf_1: '50-99-7', cf_2: '常温干燥' } },
+      { id: 2, name: '氯化钠', code: 'P02', brand: 'Merck', custom: { cf_1: '7647-14-5', cf_2: '常温干燥' } },
+      { id: 3, name: 'Tris-HCl缓冲液', code: 'P03', brand: 'Thermo Fisher', custom: { cf_1: '1185-53-1', cf_2: '4°C避光' } },
+      { id: 4, name: 'DNA聚合酶', code: 'P04', brand: 'NEB', custom: { cf_1: 'N/A', cf_2: '-20°C' } },
+      { id: 5, name: '琼脂糖', code: 'P05', brand: 'Bio-Rad', custom: { cf_1: '9012-36-6', cf_2: '常温干燥' } },
+      { id: 6, name: 'SDS', code: 'P06', brand: 'Amresco', custom: { cf_1: '151-21-3', cf_2: '常温' } },
+      { id: 7, name: '异丙醇', code: 'P07', brand: '国药集团', custom: { cf_1: '67-63-0', cf_2: '阴凉通风' } },
+      { id: 8, name: '液氮', code: 'P08', brand: '空气化工', custom: { cf_1: '7727-37-9', cf_2: '液氮罐' } },
+    ];
+
+    const INITIAL_INVENTORY = [
+      { id: 101, reagent_id: 1, location: '903', shelf_position: 'A-上', purchase_order: 'PO-2024-001', current_quantity: 0 },
+      { id: 102, reagent_id: 1, location: '908', shelf_position: 'C-3', purchase_order: 'PO-2024-002', current_quantity: 0 },
+      { id: 103, reagent_id: 2, location: '903', shelf_position: 'A-下', purchase_order: 'PO-2024-003', current_quantity: 0 },
+      { id: 104, reagent_id: 2, location: '908', shelf_position: 'C-4', purchase_order: 'PO-2024-004', current_quantity: 0 },
+      { id: 105, reagent_id: 3, location: '903', shelf_position: 'B-中', purchase_order: 'PO-2024-005', current_quantity: 0 },
+      { id: 106, reagent_id: 3, location: '908', shelf_position: 'D-下', purchase_order: 'PO-2024-006', current_quantity: 0 },
+      { id: 107, reagent_id: 4, location: '903', shelf_position: 'B-上', purchase_order: 'PO-2024-007', current_quantity: 0 },
+      { id: 108, reagent_id: 4, location: '908', shelf_position: 'D-中', purchase_order: 'PO-2024-008', current_quantity: 0 },
+      { id: 109, reagent_id: 5, location: '903', shelf_position: 'B-下', purchase_order: 'PO-2024-009', current_quantity: 0 },
+      { id: 110, reagent_id: 6, location: '908', shelf_position: 'C-上', purchase_order: 'PO-2024-010', current_quantity: 0 },
+      { id: 111, reagent_id: 7, location: '903', shelf_position: 'A-中', purchase_order: 'PO-2024-011', current_quantity: 0 },
+      { id: 112, reagent_id: 8, location: '908', shelf_position: 'E-下', purchase_order: 'PO-2024-012', current_quantity: 0 },
+    ];
+
+    const INITIAL_LOGS = [
+      { id: 1, timestamp: '2024-05-01T09:30:00Z', reagent_code: 'P01', location: '903', change_type: '-', change_amount: 2, note: '实验消耗', operator: '系统' },
+      { id: 2, timestamp: '2024-05-02T14:15:00Z', reagent_code: 'P02', location: '908', change_type: '+', change_amount: 50, note: '月度采购入库', operator: '系统' },
+      { id: 3, timestamp: '2024-05-03T11:00:00Z', reagent_code: 'P03', location: '903', change_type: '-', change_amount: 1, note: 'PCR实验', operator: '系统' },
+      { id: 4, timestamp: '2024-05-05T16:45:00Z', reagent_code: 'P01', location: '908', change_type: '+', change_amount: 20, note: '紧急补货', operator: '系统' },
+    ];
+
+    // ==================== 布局数据 ====================
+    const INITIAL_LAYOUTS = {
+      '903': {
+        type: 'lab',
+        workbenches: [
+          // 6台冰箱，左侧竖向排列
+          {
+            id: 'F1', name: '冰箱F1', category: 'fridge',
+            position: { x: 4, y: 4, w: 9, h: 10 },
+            style: { bg: '#DBEAFE', border: '#3B82F6', surface: '#BFDBFE' },
+            shelf: { rows: 4, cols: 1, prefix: 'F1' }, drawers: []
+          },
+          {
+            id: 'F2', name: '冰箱F2', category: 'fridge',
+            position: { x: 4, y: 17, w: 9, h: 10 },
+            style: { bg: '#DBEAFE', border: '#3B82F6', surface: '#BFDBFE' },
+            shelf: { rows: 4, cols: 1, prefix: 'F2' }, drawers: []
+          },
+          {
+            id: 'F3', name: '冰箱F3', category: 'fridge',
+            position: { x: 4, y: 30, w: 9, h: 10 },
+            style: { bg: '#DBEAFE', border: '#3B82F6', surface: '#BFDBFE' },
+            shelf: { rows: 4, cols: 1, prefix: 'F3' }, drawers: []
+          },
+          {
+            id: 'F4', name: '冰箱F4', category: 'fridge',
+            position: { x: 4, y: 43, w: 9, h: 10 },
+            style: { bg: '#DBEAFE', border: '#3B82F6', surface: '#BFDBFE' },
+            shelf: { rows: 4, cols: 1, prefix: 'F4' }, drawers: []
+          },
+          {
+            id: 'F5', name: '冰箱F5', category: 'fridge',
+            position: { x: 4, y: 56, w: 9, h: 10 },
+            style: { bg: '#DBEAFE', border: '#3B82F6', surface: '#BFDBFE' },
+            shelf: { rows: 4, cols: 1, prefix: 'F5' }, drawers: []
+          },
+          {
+            id: 'F6', name: '冰箱F6', category: 'fridge',
+            position: { x: 4, y: 69, w: 9, h: 10 },
+            style: { bg: '#DBEAFE', border: '#3B82F6', surface: '#BFDBFE' },
+            shelf: { rows: 4, cols: 1, prefix: 'F6' }, drawers: []
+          },
+          // 4张竖向实验台 A-D
+          {
+            id: 'A', name: '实验台A', category: 'workbench',
+            position: { x: 18, y: 4, w: 14, h: 52 },
+            style: { bg: '#FFFFFF', border: '#94A3B8', surface: '#F8FAFC' },
+            shelf: { rows: 3, cols: 1, prefix: 'A' },
+            drawers: [
+              { id: 'A-D1', name: '抽屉1', prefix: 'A-D1', style: { bg: '#E2E8F0', border: '#94A3B8' } },
+              { id: 'A-D2', name: '抽屉2', prefix: 'A-D2', style: { bg: '#E2E8F0', border: '#94A3B8' } },
+            ]
+          },
+          {
+            id: 'B', name: '实验台B', category: 'workbench',
+            position: { x: 35, y: 4, w: 14, h: 52 },
+            style: { bg: '#FFFFFF', border: '#94A3B8', surface: '#F8FAFC' },
+            shelf: { rows: 3, cols: 1, prefix: 'B' },
+            drawers: [
+              { id: 'B-D1', name: '抽屉1', prefix: 'B-D1', style: { bg: '#E2E8F0', border: '#94A3B8' } },
+              { id: 'B-D2', name: '抽屉2', prefix: 'B-D2', style: { bg: '#E2E8F0', border: '#94A3B8' } },
+            ]
+          },
+          {
+            id: 'C', name: '实验台C', category: 'workbench',
+            position: { x: 52, y: 4, w: 14, h: 52 },
+            style: { bg: '#FFFFFF', border: '#94A3B8', surface: '#F8FAFC' },
+            shelf: { rows: 3, cols: 1, prefix: 'C' },
+            drawers: [
+              { id: 'C-D1', name: '抽屉1', prefix: 'C-D1', style: { bg: '#E2E8F0', border: '#94A3B8' } },
+              { id: 'C-D2', name: '抽屉2', prefix: 'C-D2', style: { bg: '#E2E8F0', border: '#94A3B8' } },
+            ]
+          },
+          {
+            id: 'D', name: '实验台D', category: 'workbench',
+            position: { x: 69, y: 4, w: 14, h: 52 },
+            style: { bg: '#FFFFFF', border: '#94A3B8', surface: '#F8FAFC' },
+            shelf: { rows: 3, cols: 1, prefix: 'D' },
+            drawers: [
+              { id: 'D-D1', name: '抽屉1', prefix: 'D-D1', style: { bg: '#E2E8F0', border: '#94A3B8' } },
+              { id: 'D-D2', name: '抽屉2', prefix: 'D-D2', style: { bg: '#E2E8F0', border: '#94A3B8' } },
+            ]
+          },
+          // 1张横向实验台 E
+          {
+            id: 'E', name: '实验台E', category: 'workbench',
+            position: { x: 18, y: 62, w: 65, h: 14 },
+            style: { bg: '#FFFFFF', border: '#94A3B8', surface: '#F8FAFC' },
+            shelf: { rows: 5, cols: 1, prefix: 'E' },
+            drawers: [
+              { id: 'E-D1', name: '抽屉1', prefix: 'E-D1', style: { bg: '#E2E8F0', border: '#94A3B8' } },
+              { id: 'E-D2', name: '抽屉2', prefix: 'E-D2', style: { bg: '#E2E8F0', border: '#94A3B8' } },
+              { id: 'E-D3', name: '抽屉3', prefix: 'E-D3', style: { bg: '#E2E8F0', border: '#94A3B8' } },
+            ]
+          }
+        ]
+      },
+      '908': {
+        type: 'warehouse',
+        zones: [
+          {
+            id: 'C区', name: 'C区货架区',
+            position: { x: 5, y: 5, w: 45, h: 45 },
+            style: { bg: '#F1F5F9', border: '#CBD5E0' },
+            racks: [
+              { id: 'C-01', name: 'C-01货架', rows: 4, cols: 1, prefix: 'C' }
+            ],
+            cabinets: [
+              { id: 'C-C1', name: 'C货柜1', prefix: 'C-C1', style: { bg: '#E2E8F0', border: '#94A3B8' } }
+            ]
+          },
+          {
+            id: 'D区', name: 'D区货架区',
+            position: { x: 55, y: 5, w: 40, h: 45 },
+            style: { bg: '#F1F5F9', border: '#CBD5E0' },
+            racks: [
+              { id: 'D-01', name: 'D-01货架', rows: 4, cols: 1, prefix: 'D' }
+            ],
+            cabinets: []
+          },
+          {
+            id: 'E区', name: 'E区货架区',
+            position: { x: 5, y: 55, w: 45, h: 35 },
+            style: { bg: '#F1F5F9', border: '#CBD5E0' },
+            racks: [
+              { id: 'E-01', name: 'E-01货架', rows: 2, cols: 1, prefix: 'E' }
+            ],
+            cabinets: []
+          }
+        ]
+      }
+    };
+    window.INITIAL_LAYOUTS = INITIAL_LAYOUTS;
+
+// Shared utilities loaded from ./components/utils.js
+    // ==================== 主应用 ====================
+
+    function App() {
+      const [activeView, setActiveView] = useState('aggregate');
+      const [syncStatus, setSyncStatus] = useState('idle');
+      const [lastSyncTime, setLastSyncTime] = useState(0);
+      const syncTimerRef = useRef(null);
+      const [purchaseSearch, setPurchaseSearch] = useState('');
+
+      const [reagents, setReagents] = useState(() => {
+        const saved = localStorage.getItem('ri_reagents');
+        const data = saved ? JSON.parse(saved) : INITIAL_REAGENTS;
+        // 数据迁移：补全 safety_stock 字段
+        return data.map(r => ({ ...r, safety_stock: r.safety_stock ?? 0 }));
+      });
+      const [inventory, setInventory] = useState(() => {
+        const saved = localStorage.getItem('ri_inventory');
+        return saved ? JSON.parse(saved) : INITIAL_INVENTORY;
+      });
+      const [logs, setLogs] = useState(() => {
+        const saved = localStorage.getItem('ri_logs');
+        return saved ? JSON.parse(saved) : INITIAL_LOGS;
+      });
+      const [fields, setFields] = useState(() => {
+        const saved = localStorage.getItem('ri_fields');
+        return saved ? JSON.parse(saved) : [...BUILTIN_FIELDS, ...INITIAL_CUSTOM_FIELDS];
+      });
+      // 数据迁移：补全 safety_stock
+      const migrateSafetyStock = () => {
+        const saved = localStorage.getItem('ri_reagents');
+        if (saved) {
+          const data = JSON.parse(saved);
+          if (data.some(r => r.safety_stock === undefined)) {
+            localStorage.setItem('ri_reagents', JSON.stringify(data.map(r => ({ ...r, safety_stock: r.safety_stock ?? 0 }))));
+          }
+        }
+      };
+      migrateSafetyStock();
+
+      // 数据迁移：旧 location 名称 → 新名称
+      const migrateLocationData = () => {
+        if (localStorage.getItem('ri_location_migrated_v2')) return;
+        try {
+          const invSaved = localStorage.getItem('ri_inventory');
+          if (invSaved) {
+            const inv = JSON.parse(invSaved);
+            const newInv = inv.map(item => {
+              if (item.location === '901实验室') return { ...item, location: '903' };
+              if (item.location === '903仓库') return { ...item, location: '908' };
+              return item;
+            });
+            localStorage.setItem('ri_inventory', JSON.stringify(newInv));
+          }
+          const logSaved = localStorage.getItem('ri_logs');
+          if (logSaved) {
+            const logs = JSON.parse(logSaved);
+            const newLogs = logs.map(log => {
+              if (log.location === '901实验室') return { ...log, location: '903' };
+              if (log.location === '903仓库') return { ...log, location: '908' };
+              return log;
+            });
+            localStorage.setItem('ri_logs', JSON.stringify(newLogs));
+          }
+          const layoutSaved = localStorage.getItem('ri_layouts');
+          if (layoutSaved) {
+            const layouts = JSON.parse(layoutSaved);
+            const newLayouts = {};
+            Object.entries(layouts).forEach(([key, value]) => {
+              let newKey = key;
+              if (key === '901实验室') newKey = '903';
+              if (key === '903仓库') newKey = '908';
+              newLayouts[newKey] = value;
+            });
+            localStorage.setItem('ri_layouts', JSON.stringify(newLayouts));
+          }
+          localStorage.setItem('ri_location_migrated_v2', 'true');
+        } catch (e) { console.error('数据迁移失败:', e); }
+      };
+      migrateLocationData();
+
+      // 布局升级：旧版自由布局 → 新版方案A固定布局
+      const migrateLayoutData = () => {
+        try {
+          let needsReset = false;
+          const layoutSaved = localStorage.getItem('ri_layouts');
+          if (layoutSaved) {
+            const layouts = JSON.parse(layoutSaved);
+            if (layouts['903'] && layouts['903'].type === 'lab') {
+              const wbs = layouts['903'].workbenches || [];
+              const hasF1 = wbs.some(wb => wb.id === 'F1' && wb.category === 'fridge');
+              const hasE = wbs.some(wb => wb.id === 'E' && wb.category === 'workbench');
+              if (wbs.length !== 11 || !hasF1 || !hasE) {
+                needsReset = true;
+              }
+            } else {
+              needsReset = true;
+            }
+          }
+          if (needsReset) {
+            console.log('[Layout] 检测到旧版布局，自动升级到方案A');
+            localStorage.setItem('ri_layouts', JSON.stringify(INITIAL_LAYOUTS));
+          }
+          localStorage.setItem('ri_layout_migrated_v4', 'true');
+        } catch (e) { console.error('布局升级失败:', e); }
+      };
+      migrateLayoutData();
+
+      // 注意：当前版本初始库存数量为0，以后录入的数据不会被自动清除
+
+      const [layouts, setLayouts] = useState(() => {
+        const saved = localStorage.getItem('ri_layouts');
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            const hasOldFormat = Object.values(parsed).some(l => l && Array.isArray(l.elements) && !l.type);
+            if (hasOldFormat) {
+              localStorage.removeItem('ri_layouts');
+              return INITIAL_LAYOUTS;
+            }
+            // 强制检查：如果 903 不是新版方案A布局，直接返回默认
+            if (parsed['903'] && parsed['903'].type === 'lab') {
+              const wbs = parsed['903'].workbenches || [];
+              const hasF1 = wbs.some(wb => wb.id === 'F1' && wb.category === 'fridge');
+              const hasE = wbs.some(wb => wb.id === 'E' && wb.category === 'workbench');
+              if (wbs.length !== 11 || !hasF1 || !hasE) {
+                console.log('[Layout] useState 检测到旧版布局，使用默认方案A');
+                localStorage.setItem('ri_layouts', JSON.stringify(INITIAL_LAYOUTS));
+                return INITIAL_LAYOUTS;
+              }
+            }
+            Object.values(parsed).forEach(layout => {
+              if (layout.type === 'lab') {
+                layout.workbenches.forEach(wb => {
+                  if (wb.shelf && wb.shelf.cols > 1) {
+                    wb.shelf.cols = 1;
+                    if (!wb.shelf.rowOrder) {
+                      wb.shelf.rowOrder = Array.from({ length: wb.shelf.rows }, (_, i) => i);
+                    }
+                  }
+                });
+              } else if (layout.type === 'warehouse') {
+                layout.zones.forEach(zone => {
+                  zone.racks.forEach(rack => {
+                    if (rack.cols > 1) {
+                      rack.cols = 1;
+                      if (!rack.rowOrder) {
+                        rack.rowOrder = Array.from({ length: rack.rows }, (_, i) => i);
+                      }
+                    }
+                  });
+                });
+              }
+            });
+            return parsed;
+          } catch (e) { return INITIAL_LAYOUTS; }
+        }
+        return INITIAL_LAYOUTS;
+      });
+      const [operator, setOperator] = useState(localStorage.getItem('ri_operator') || '');
+      const [showOperatorModal, setShowOperatorModal] = useState(false);
+      const [newOperatorName, setNewOperatorName] = useState('');
+      const [hostname, setHostname] = useState('');
+      const [syncPath, setSyncPath] = useState('');
+      const [showPathModal, setShowPathModal] = useState(false);
+      const [newSyncPath, setNewSyncPath] = useState('');
+
+      // localStorage 持久化
+      useEffect(() => { localStorage.setItem('ri_reagents', JSON.stringify(reagents)); }, [reagents]);
+      useEffect(() => { localStorage.setItem('ri_inventory', JSON.stringify(inventory)); }, [inventory]);
+      useEffect(() => { localStorage.setItem('ri_logs', JSON.stringify(logs)); }, [logs]);
+      useEffect(() => { localStorage.setItem('ri_fields', JSON.stringify(fields)); }, [fields]);
+      useEffect(() => { localStorage.setItem('ri_layouts', JSON.stringify(layouts)); }, [layouts]);
+      useEffect(() => { localStorage.setItem('ri_operator', operator); }, [operator]);
+
+      // 初始化：获取设备名并查找/设置操作人，同时读取同步路径
+      useEffect(() => {
+        let cancelled = false;
+        const initOperator = async () => {
+          if (!window.electronAPI?.system?.hostname) return;
+          try {
+            const hn = await window.electronAPI.system.hostname();
+            if (cancelled) return;
+            setHostname(hn);
+            const mapping = await NutstoreSync.readOperators();
+            if (mapping[hn]) {
+              setOperator(mapping[hn]);
+            } else if (!operator) {
+              setShowOperatorModal(true);
+            }
+          } catch (e) {
+            console.error('获取设备名失败:', e);
+          }
+        };
+        initOperator();
+        NutstoreSync.init().then(() => {
+          if (NutstoreSync.enabled && NutstoreSync.baseDir) {
+            setSyncPath(NutstoreSync.baseDir);
+          }
+        });
+        return () => { cancelled = true; };
+      }, []);
+
+      // 绑定操作人到当前设备
+      const bindOperator = async () => {
+        if (!newOperatorName.trim()) return;
+        const name = newOperatorName.trim();
+        setOperator(name);
+        setShowOperatorModal(false);
+        setNewOperatorName('');
+        if (hostname) {
+          const mapping = await NutstoreSync.readOperators();
+          mapping[hostname] = name;
+          await NutstoreSync.writeOperators(mapping);
+        }
+      };
+
+      // 修改同步路径
+      const changeSyncPath = async () => {
+        if (!newSyncPath.trim()) return;
+        const success = await NutstoreSync.setBaseDir(newSyncPath.trim());
+        if (success) {
+          setSyncPath(newSyncPath.trim());
+          setShowPathModal(false);
+          setNewSyncPath('');
+        } else {
+          alert('路径设置失败，请检查路径是否存在且可访问');
+        }
+      };
+
+      // 应用单条增量操作到本地状态
+      const applyOperation = useCallback((op) => {
+        if (op.action === 'update_inventory') {
+          setInventory(prev => prev.map(inv =>
+            inv.id === op.target.id ? { ...inv, [op.target.field]: op.target.newValue } : inv
+          ));
+        } else if (op.action === 'create_inventory') {
+          setInventory(prev => {
+            if (prev.some(i => i.id === op.data.id)) return prev;
+            return [...prev, op.data];
+          });
+        } else if (op.action === 'delete_inventory') {
+          setInventory(prev => prev.filter(inv => inv.id !== op.target.id));
+        } else if (op.action === 'add_log') {
+          setLogs(prev => {
+            if (prev.some(l => l.id === op.data.id)) return prev;
+            return [...prev, op.data];
+          });
+        }
+      }, []);
+
+      // 初始化：加载快照 + 重放增量操作日志
+      useEffect(() => {
+        let cancelled = false;
+        NutstoreSync.init().then(async () => {
+          const snapshot = await NutstoreSync.readSnapshot();
+          const ops = await NutstoreSync.readAllOps();
+          if (cancelled) return;
+
+          // 应用快照（低频数据 + 基础状态）
+          if (snapshot && snapshot._timestamp) {
+            const localTs = parseInt(localStorage.getItem('ri_last_sync') || '0');
+            if (snapshot._timestamp > localTs) {
+              if (snapshot.reagents) setReagents(snapshot.reagents);
+              if (snapshot.fields) setFields(snapshot.fields);
+              if (snapshot.layouts) setLayouts(snapshot.layouts);
+              if (snapshot.inventory) setInventory(snapshot.inventory);
+              if (snapshot.logs) setLogs(snapshot.logs);
+              localStorage.setItem('ri_last_sync', String(snapshot._timestamp));
+              setLastSyncTime(snapshot._timestamp);
+            }
+          }
+
+          // 重放增量操作（高频数据）
+          if (ops.length > 0) {
+            for (const op of ops) {
+              applyOperation(op);
+            }
+            localStorage.setItem('ri_last_sync', String(Date.now()));
+            setLastSyncTime(Date.now());
+          }
+
+          // 操作日志超过100条时自动压缩
+          if (ops.length > 100) {
+            setTimeout(() => {
+              NutstoreSync.compressSnapshot({ reagents, inventory, logs, fields, layouts });
+            }, 5000);
+          }
+        });
+        return () => { cancelled = true; };
+      }, []);
+
+      // 低频数据变更后防抖写入快照（包含完整状态）
+      useEffect(() => {
+        if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = setTimeout(() => {
+          NutstoreSync.writeSnapshot({ reagents, inventory, logs, fields, layouts });
+        }, 5000);
+        return () => { if (syncTimerRef.current) clearTimeout(syncTimerRef.current); };
+      }, [reagents, inventory, logs, fields, layouts]);
+
+      // 手动同步（上传缓冲 + 下载他人操作）
+      const handleSync = useCallback(async () => {
+        setSyncStatus('syncing');
+        try {
+          // 1. 刷出本地缓冲的操作日志
+          await NutstoreSync._flushOps();
+          // 2. 读取他人的操作日志并重放
+          const ops = await NutstoreSync.readAllOps();
+          if (ops.length > 0) {
+            for (const op of ops) {
+              applyOperation(op);
+            }
+          }
+          // 3. 写入最新快照
+          await NutstoreSync.writeSnapshot({ reagents, inventory, logs, fields, layouts });
+          localStorage.setItem('ri_last_sync', String(Date.now()));
+          setLastSyncTime(Date.now());
+          setSyncStatus('synced');
+          setTimeout(() => setSyncStatus('idle'), 2000);
+        } catch (e) {
+          console.error('同步失败:', e);
+          setSyncStatus('error');
+          setTimeout(() => setSyncStatus('idle'), 3000);
+        }
+      }, [reagents, fields, layouts, applyOperation]);
+
+      // 库存变更：统一入口，自动记日志
+      const handleInventoryChange = useCallback((itemId, newQuantityOrItem, updates = null, options = {}) => {
+        const { skipLog = false, note = '', changeType = null } = options;
+        if (itemId === '__NEW__') {
+          setInventory(prev => {
+            const next = [...prev, newQuantityOrItem];
+            NutstoreSync.writeOperation({
+              action: 'create_inventory',
+              data: newQuantityOrItem
+            });
+            return next;
+          });
+        } else {
+          setInventory(prev => {
+            const oldItem = prev.find(inv => inv.id === itemId);
+            const next = prev.map(inv => inv.id === itemId ? { ...inv, current_quantity: newQuantityOrItem, ...updates } : inv);
+            const newItem = next.find(inv => inv.id === itemId);
+            const diff = newItem ? newItem.current_quantity - (oldItem?.current_quantity || 0) : 0;
+            const updateFields = updates ? Object.keys(updates) : ['current_quantity'];
+            NutstoreSync.writeOperation({
+              action: 'update_inventory',
+              target: { id: itemId, fields: updateFields, oldValue: oldItem, newQuantity: newQuantityOrItem, updates }
+            });
+            // 自动记日志（数量变化时）
+            if (!skipLog && diff !== 0 && newItem) {
+              const reagent = reagents.find(r => r.id === newItem.reagent_id);
+              const logEntry = {
+                reagent_code: reagent?.code || 'UNKNOWN',
+                location: newItem.location || '',
+                change_type: changeType || (diff > 0 ? '+' : '-'),
+                change_amount: Math.abs(diff),
+                note: note || (diff > 0 ? '手动入库' : '手动出库'),
+              };
+              const newLog = { id: Date.now() + Math.random(), timestamp: new Date().toISOString(), operator: operator || '未知', ...logEntry };
+              setLogs(prevLogs => [...prevLogs, newLog]);
+              NutstoreSync.writeOperation({ action: 'add_log', data: newLog });
+            }
+            return next;
+          });
+        }
+      }, [reagents, operator]);
+
+      // 日志追加：写增量日志（自动注入操作人）
+      const handleLogAdd = useCallback((logData) => {
+        const newLog = { id: Date.now() + Math.random(), timestamp: new Date().toISOString(), operator: operator || '未知', ...logData };
+        setLogs(prev => [...prev, newLog]);
+        NutstoreSync.writeOperation({
+          action: 'add_log',
+          data: newLog
+        });
+      }, [operator]);
+
+      return html`
+        <div class="min-h-screen bg-bg">
+          <${Navbar} activeView=${activeView} onChange=${setActiveView} syncStatus=${syncStatus} onSync=${handleSync}
+            operator=${operator} onOperatorClick=${() => { setNewOperatorName(operator); setShowOperatorModal(true); }}
+            syncPath=${syncPath} onPathClick=${() => { setNewSyncPath(syncPath); setShowPathModal(true); }} />
+          <main class="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+            ${activeView === 'aggregate' && html`<${AggregateView} reagents=${reagents} inventory=${inventory} fields=${fields} />`}
+            ${activeView === 'segmented' && html`
+              <${SegmentedView} reagents=${reagents} inventory=${inventory} fields=${fields}
+                onInventoryChange=${handleInventoryChange} />
+            `}
+            ${activeView === 'purchase' && html`
+              <div class="fade-in">
+                <div class="flex items-center justify-between mb-6">
+                  <h2 class="text-lg font-bold text-gray-800">待采购清单 <span class="text-sm font-normal text-gray-400 ml-2">库存低于安全线</span></h2>
+                  <button onClick=${() => {
+                    const lowStock = reagents.map(r => {
+                      const inv903 = inventory.find(inv => inv.reagent_id === r.id && inv.location === '903');
+                      const inv908 = inventory.find(inv => inv.reagent_id === r.id && inv.location === '908');
+                      const total = (inv903?.current_quantity || 0) + (inv908?.current_quantity || 0);
+                      return { ...r, total, inv903, inv908 };
+                    }).filter(r => r.safety_stock > 0 && r.total < r.safety_stock).sort((a, b) => (a.safety_stock - a.total) - (b.safety_stock - b.total));
+                    const headers = ['试剂名称', '简写', '品牌', 'CAS号', '货号', '规格', '单位', '采购单号', '903数量', '908数量', '总库存', '安全库存', '缺口'];
+                    const rows = lowStock.map(r => {
+                      const inv903 = r.inv903;
+                      const inv908 = r.inv908;
+                      return [r.name, r.code, r.brand, r.custom?.cf_1 || '', r.custom?.cf_3 || '', r.custom?.cf_4 || '', r.custom?.cf_5 || '', inv903?.purchase_order || inv908?.purchase_order || '', inv903?.current_quantity || 0, inv908?.current_quantity || 0, r.total, r.safety_stock, r.safety_stock - r.total];
+                    });
+                    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+                    ws['!cols'] = headers.map(() => ({ wch: 14 }));
+                    const wb = XLSX.utils.book_new();
+                    XLSX.utils.book_append_sheet(wb, ws, '待采购清单');
+                    XLSX.writeFile(wb, `待采购清单_${new Date().toISOString().slice(0,10)}.xlsx`);
+                  }}
+                    class="flex items-center gap-1.5 px-4 py-2 bg-white border border-gray-200 rounded-xl hover:border-primary hover:text-primary transition-all text-sm font-medium text-gray-600">
+                    <span>📤</span> 导出Excel
+                  </button>
+                </div>
+                <div class="flex-1 relative mb-4">
+                  <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-lg">🔍</span>
+                  <input type="text" placeholder="搜索试剂名称、简写、品牌、CAS号、货号..." value=${purchaseSearch}
+                    onInput=${e => setPurchaseSearch(e.target.value)}
+                    class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all text-sm" />
+                </div>
+                <div class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+                  <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                      <thead>
+                        <tr class="bg-gray-50 border-b border-gray-200">
+                          <th class="text-left px-5 py-3.5 font-semibold text-gray-600">试剂名称</th>
+                          <th class="text-left px-5 py-3.5 font-semibold text-gray-600 w-16">简写</th>
+                          <th class="text-left px-5 py-3.5 font-semibold text-gray-600">品牌</th>
+                          <th class="text-left px-5 py-3.5 font-semibold text-gray-600 text-xs">CAS号</th>
+                          <th class="text-left px-5 py-3.5 font-semibold text-gray-600 text-xs">货号</th>
+                          <th class="text-left px-5 py-3.5 font-semibold text-gray-600 text-xs">规格</th>
+                          <th class="text-left px-5 py-3.5 font-semibold text-gray-600 text-xs">单位</th>
+                          <th class="text-left px-5 py-3.5 font-semibold text-gray-600 text-xs">采购单号</th>
+                          <th class="text-center px-5 py-3.5 font-semibold text-gray-600 w-20">903数量</th>
+                          <th class="text-center px-5 py-3.5 font-semibold text-gray-600 w-20">908数量</th>
+                          <th class="text-center px-5 py-3.5 font-semibold text-gray-600 w-20">总库存</th>
+                          <th class="text-center px-5 py-3.5 font-semibold text-gray-600 w-20">安全库存</th>
+                          <th class="text-center px-5 py-3.5 font-semibold text-gray-600 w-16 text-red-600">缺口</th>
+                        </tr>
+                      </thead>
+                      <tbody class="divide-y divide-gray-100">
+                        ${(() => {
+                          const s = purchaseSearch.toLowerCase().trim();
+                          const filtered = reagents.map(r => {
+                            const inv903 = inventory.find(inv => inv.reagent_id === r.id && inv.location === '903');
+                            const inv908 = inventory.find(inv => inv.reagent_id === r.id && inv.location === '908');
+                            const total = (inv903?.current_quantity || 0) + (inv908?.current_quantity || 0);
+                            const gap = (r.safety_stock || 0) - total;
+                            return { ...r, total, gap, inv903, inv908 };
+                          }).filter(r => {
+                            if (r.gap <= 0) return false;
+                            if (!s) return true;
+                            // 搜索覆盖该页面所有可见字段
+                            const nameMatch = r.name.toLowerCase().includes(s);
+                            const codeMatch = r.code.toLowerCase().includes(s);
+                            const brandMatch = (r.brand || '').toLowerCase().includes(s);
+                            const casMatch = (r.custom?.cf_1 || '').toLowerCase().includes(s);
+                            const catMatch = (r.custom?.cf_3 || '').toLowerCase().includes(s);
+                            const specMatch = (r.custom?.cf_4 || '').toLowerCase().includes(s);
+                            const unitMatch = (r.custom?.cf_5 || '').toLowerCase().includes(s);
+                            const poMatch = ((r.inv903?.purchase_order || '') + (r.inv908?.purchase_order || '')).toLowerCase().includes(s);
+                            return nameMatch || codeMatch || brandMatch || casMatch || catMatch || specMatch || unitMatch || poMatch;
+                          }).sort((a, b) => (a.safety_stock - a.total) - (b.safety_stock - b.total));
+                          return filtered.map(r => html`
+                            <tr key=${r.id} class="hover:bg-gray-50/50 transition-colors">
+                              <td class="px-5 py-4 font-medium text-gray-800">${r.name}</td>
+                              <td class="px-5 py-4"><span class="inline-block px-2 py-0.5 bg-secondary/10 text-secondary text-xs font-bold rounded">${r.code}</span></td>
+                              <td class="px-5 py-4 text-gray-500 text-xs">${r.brand}</td>
+                              <td class="px-5 py-4 text-gray-500 text-xs font-mono">${r.custom?.cf_1 || '—'}</td>
+                              <td class="px-5 py-4 text-gray-500 text-xs font-mono">${r.custom?.cf_3 || '—'}</td>
+                              <td class="px-5 py-4 text-gray-500 text-xs">${r.custom?.cf_4 || '—'}</td>
+                              <td class="px-5 py-4 text-gray-500 text-xs">${r.custom?.cf_5 || '—'}</td>
+                              <td class="px-5 py-4 text-gray-500 text-xs font-mono">${r.inv903?.purchase_order || r.inv908?.purchase_order || '—'}</td>
+                              <td class="px-5 py-4 text-center text-gray-600">${r.inv903?.current_quantity || 0}</td>
+                              <td class="px-5 py-4 text-center text-gray-600">${r.inv908?.current_quantity || 0}</td>
+                              <td class="px-5 py-4 text-center font-bold text-gray-800">${r.total}</td>
+                              <td class="px-5 py-4 text-center text-gray-600">${r.safety_stock || 0}</td>
+                              <td class="px-5 py-4 text-center font-bold text-red-600">${r.gap}</td>
+                            </tr>
+                          `);
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                  ${reagents.every(r => {
+                    const total = inventory.filter(inv => inv.reagent_id === r.id).reduce((s, i) => s + i.current_quantity, 0);
+                    return (r.safety_stock || 0) <= total;
+                  }) && html`
+                    <div class="text-center py-16 text-gray-400">
+                      <div class="text-5xl mb-3 opacity-50">✅</div>
+                      <p>所有试剂库存充足，暂无采购需求</p>
+                    </div>
+                  `}
+                </div>
+              </div>
+            `}
+            ${activeView === 'layout' && html`<${LayoutView} reagents=${reagents} inventory=${inventory} layouts=${layouts} onLayoutsChange=${setLayouts} />`}
+            ${activeView === 'logs' && html`<${LogView} logs=${logs} reagents=${reagents} onLogsChange=${setLogs} />`}
+            ${activeView === 'reagents' && html`
+              <${ReagentManager} reagents=${reagents} inventory=${inventory} fields=${fields} logs=${logs}
+                onReagentsChange=${setReagents} onInventoryChange=${setInventory} onInventoryItemChange=${handleInventoryChange} onFieldsChange=${setFields} onLogsChange=${setLogs} />
+            `}
+          </main>
+
+          ${showOperatorModal && html`
+            <div class="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center" onClick=${() => setShowOperatorModal(false)}>
+              <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm mx-4" onClick=${e => e.stopPropagation()}>
+                <h3 class="text-lg font-bold text-gray-800 mb-2">${operator ? '更换操作人' : '设置操作人'}</h3>
+                <p class="text-sm text-gray-500 mb-4">设备名: ${hostname || '未知'}</p>
+                <input type="text" placeholder="请输入操作人姓名..." value=${newOperatorName}
+                  onInput=${e => setNewOperatorName(e.target.value)}
+                  onKeyDown=${e => e.key === 'Enter' && bindOperator()}
+                  class="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all text-sm mb-4" />
+                <div class="flex gap-3">
+                  <button onClick=${() => setShowOperatorModal(false)}
+                    class="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 transition-colors">
+                    取消
+                  </button>
+                  <button onClick=${bindOperator}
+                    class="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-white bg-primary hover:bg-primary/90 transition-colors">
+                    确认
+                  </button>
+                </div>
+              </div>
+            </div>
+          `}
+
+          ${showPathModal && html`
+            <div class="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center" onClick=${() => setShowPathModal(false)}>
+              <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg mx-4" onClick=${e => e.stopPropagation()}>
+                <h3 class="text-lg font-bold text-gray-800 mb-2">修改同步路径</h3>
+                <p class="text-sm text-gray-500 mb-4">当前路径: ${syncPath || '未设置'}</p>
+                <input type="text" placeholder="请输入新的同步目录绝对路径..." value=${newSyncPath}
+                  onInput=${e => setNewSyncPath(e.target.value)}
+                  onKeyDown=${e => e.key === 'Enter' && changeSyncPath()}
+                  class="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all text-sm mb-4" />
+                <div class="flex gap-3">
+                  <button onClick=${() => setShowPathModal(false)}
+                    class="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 transition-colors">
+                    取消
+                  </button>
+                  <button onClick=${changeSyncPath}
+                    class="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-white bg-primary hover:bg-primary/90 transition-colors">
+                    确认
+                  </button>
+                </div>
+              </div>
+            </div>
+          `}
+        </div>
+      `;
+    }
+
+    render(html`<${App} />`, document.getElementById('root'));
+    })();
+  </script>
+</head>
+<body class="bg-bg min-h-screen">
+  <div id="root"></div>
+</body>
+</html>
