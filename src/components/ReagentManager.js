@@ -537,7 +537,7 @@ export function ReagentManager({ reagents, inventory, fields, logs, onReagentsCh
           <table class="w-full text-sm">
             <thead>
               <tr class="bg-gray-50 border-b border-gray-200">
-                ${allFields.map(f => window.html`<th key=${f.id} class="text-left px-5 py-3.5 font-semibold text-gray-600 ${f.builtin ? '' : 'text-xs'}">${f.label}${f.required ? window.html`<span class="text-danger ml-0.5">*</span>` : ''}</th>`)}
+                ${allFields.map(f => window.html`<th key=${f.id} class="text-left px-5 py-3.5 font-semibold text-gray-600 ${f.builtin ? '' : 'text-xs'}">${f.label}${f.required ? window.html`<span class="text-danger ml-0.5">*</span>` : null}</th>`)}
                 <th class="text-center px-5 py-3.5 font-semibold text-gray-600 text-xs">903数量</th>
                 <th class="text-center px-5 py-3.5 font-semibold text-gray-600 text-xs">908数量</th>
                 <th class="text-center px-5 py-3.5 font-semibold text-gray-600 text-xs">安全库存</th>
@@ -602,16 +602,16 @@ export function ReagentManager({ reagents, inventory, fields, logs, onReagentsCh
           </tbody>
         </table>
       </div>
+      </div>
 
-      <!-- 新增/编辑试剂弹窗 -->
-      ${showAdd && window.html`
+      ${showAdd ? window.html`
         <div class="fixed inset-0 z-50 flex items-center justify-center modal-backdrop" onClick=${() => setShowAdd(false)}>
           <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 p-6 max-h-[90vh] overflow-y-auto" onClick=${e => e.stopPropagation()}>
             <h3 class="text-lg font-bold text-gray-800 mb-4">${editingReagent ? '编辑试剂' : '新增试剂'}</h3>
             <div class="space-y-3">
               ${allFields.map(f => window.html`
                 <div key=${f.id}>
-                  <label class="block text-xs font-medium text-gray-500 mb-1">${f.label}${f.required ? window.html`<span class="text-danger ml-0.5">*</span>` : ''}</label>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">${f.label}${f.required ? window.html`<span class="text-danger ml-0.5">*</span>` : null}</label>
                   ${f.builtin ? window.html`
                     <input value=${form[f.id]}
                       onInput=${e => setForm({...form, [f.id]: e.target.value})}
@@ -656,10 +656,9 @@ export function ReagentManager({ reagents, inventory, fields, logs, onReagentsCh
             </div>
           </div>
         </div>
-      `}
+      ` : null}
 
-      <!-- CSV导入弹窗 -->
-      ${showImport && window.html`
+      ${showImport ? window.html`
         <div class="fixed inset-0 z-50 flex items-center justify-center modal-backdrop" onClick=${() => setShowImport(false)}>
           <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 p-6" onClick=${e => e.stopPropagation()}>
             <h3 class="text-lg font-bold text-gray-800 mb-2">批量导入试剂</h3>
@@ -680,10 +679,9 @@ export function ReagentManager({ reagents, inventory, fields, logs, onReagentsCh
             </div>
           </div>
         </div>
-      `}
+      ` : null}
 
-      <!-- 字段配置弹窗 -->
-      ${showFieldConfig && window.html`
+      ${showFieldConfig ? window.html`
         <div class="fixed inset-0 z-50 flex items-center justify-center modal-backdrop" onClick=${() => setShowFieldConfig(false)}>
           <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6" onClick=${e => e.stopPropagation()}>
             <h3 class="text-lg font-bold text-gray-800 mb-4">字段配置</h3>
@@ -703,7 +701,7 @@ export function ReagentManager({ reagents, inventory, fields, logs, onReagentsCh
                   </div>
                 </div>
               `)}
-              ${customFields.length === 0 && window.html`<p class="text-xs text-gray-400 text-center py-2">暂无自定义字段</p>`}
+              ${customFields.length === 0 ? window.html`<p class="text-xs text-gray-400 text-center py-2">暂无自定义字段</p>` : null}
             </div>
 
             <div class="flex gap-2 mb-6">
@@ -719,7 +717,7 @@ export function ReagentManager({ reagents, inventory, fields, logs, onReagentsCh
               class="w-full py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium transition-colors">关闭</button>
           </div>
         </div>
-      `}
+      ` : null}
     </div>
   `;
 }
